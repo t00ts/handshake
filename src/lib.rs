@@ -1,10 +1,17 @@
 // lib.rs
 
-use std::{io::{self, ErrorKind}, sync::{Arc, Mutex}};
 use pea2pea::{protocols::Handshake, Config, Connection, ConnectionSide, Node, Pea2Pea};
-use ring::{agreement::{agree_ephemeral, EphemeralPrivateKey, UnparsedPublicKey, X25519}, error::Unspecified, hkdf::{Salt, HKDF_SHA256}, rand::{SecureRandom, SystemRandom}};
+use ring::{
+    agreement::{agree_ephemeral, EphemeralPrivateKey, UnparsedPublicKey, X25519},
+    error::Unspecified,
+    hkdf::{Salt, HKDF_SHA256},
+    rand::{SecureRandom, SystemRandom},
+};
+use std::{
+    io::{self, ErrorKind},
+    sync::{Arc, Mutex},
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
 
 /// Length (in bytes) of the public key exchanged during the handshake
 const PUBLIC_KEY_LENGTH: usize = 32;
@@ -22,7 +29,7 @@ struct NodeData {
 #[derive(Clone)]
 pub struct SimpleNode {
     node: Node,
-    data: Arc<Mutex<NodeData>>
+    data: Arc<Mutex<NodeData>>,
 }
 
 impl Pea2Pea for SimpleNode {
@@ -31,11 +38,9 @@ impl Pea2Pea for SimpleNode {
     }
 }
 
-
 impl SimpleNode {
-
     pub fn new(name: &str) -> Self {
-        let cfg = Config{
+        let cfg = Config {
             name: Some(name.into()),
             ..Default::default()
         };
@@ -47,24 +52,24 @@ impl SimpleNode {
 
     #[cfg(test)]
     fn shared_secret(&self) -> Option<Vec<u8>> {
-        self.data.lock()
+        self.data
+            .lock()
             .and_then(|data| Ok(data.shared_secret.clone()))
             .ok()
     }
-
 }
 
 impl Handshake for SimpleNode {
-
     async fn perform_handshake(&self, mut conn: Connection) -> io::Result<Connection> {
-
         // initialize a random number generator
         let rng = SystemRandom::new();
 
         // generate an ephemeral key pair
-        let private_key = EphemeralPrivateKey::generate(&X25519, &rng)
-            .map_err(|_| io::Error::new(ErrorKind::Other, "Failed creating ephemeral private key"))?;
-        let public_key = private_key.compute_public_key()
+        let private_key = EphemeralPrivateKey::generate(&X25519, &rng).map_err(|_| {
+            io::Error::new(ErrorKind::Other, "Failed creating ephemeral private key")
+        })?;
+        let public_key = private_key
+            .compute_public_key()
             .map_err(|_| io::Error::new(ErrorKind::Other, "Failed computing private key"))?;
 
         // buffer for the handshake info being exchanged
@@ -76,12 +81,12 @@ impl Handshake for SimpleNode {
 
         match node_conn_side {
             ConnectionSide::Initiator => {
-
                 // generate a random salt
                 let rng = SystemRandom::new();
                 let mut salt = [0u8; SALT_LENGTH];
-                rng.fill(&mut salt)
-                    .map_err(|_| io::Error::new(ErrorKind::Other, "Failed to generate random salt"))?;
+                rng.fill(&mut salt).map_err(|_| {
+                    io::Error::new(ErrorKind::Other, "Failed to generate random salt")
+                })?;
 
                 // send public key and random salt
                 handshake_buffer[..PUBLIC_KEY_LENGTH].copy_from_slice(public_key.as_ref());
@@ -92,48 +97,61 @@ impl Handshake for SimpleNode {
                 let mut peer_public_key_bytes = [0u8; PUBLIC_KEY_LENGTH];
                 let len = stream.read(&mut peer_public_key_bytes).await?;
                 if len != PUBLIC_KEY_LENGTH {
-                    return Err(io::Error::new(ErrorKind::InvalidData, "Invalid key length received"));
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "Invalid key length received",
+                    ));
                 }
                 let peer_public_key = UnparsedPublicKey::new(&X25519, peer_public_key_bytes);
 
                 // compute and store shared secret
-                let mut node_data = self.data.lock()
+                let mut node_data = self
+                    .data
+                    .lock()
                     .map_err(|_| io::Error::new(ErrorKind::Other, "Mutex lock failed"))?;
-                node_data.shared_secret = compute_shared_secret(private_key, peer_public_key, &salt)
-                    .map_err(|_| io::Error::new(ErrorKind::Other, "Failed computing shared secret"))?;
-
+                node_data.shared_secret =
+                    compute_shared_secret(private_key, peer_public_key, &salt).map_err(|_| {
+                        io::Error::new(ErrorKind::Other, "Failed computing shared secret")
+                    })?;
             }
             ConnectionSide::Responder => {
-
                 // receive the peer's public key and random salt
                 let len = stream.read(&mut handshake_buffer).await?;
                 if len != PUBLIC_KEY_LENGTH + SALT_LENGTH {
-                    return Err(io::Error::new(ErrorKind::InvalidData, "Invalid handshake data received"));
+                    return Err(io::Error::new(
+                        ErrorKind::InvalidData,
+                        "Invalid handshake data received",
+                    ));
                 }
-                let peer_public_key = UnparsedPublicKey::new(&X25519, &handshake_buffer[..PUBLIC_KEY_LENGTH]);
+                let peer_public_key =
+                    UnparsedPublicKey::new(&X25519, &handshake_buffer[..PUBLIC_KEY_LENGTH]);
                 let salt = &handshake_buffer[PUBLIC_KEY_LENGTH..];
 
                 // send own public key
                 stream.write_all(public_key.as_ref()).await?;
 
                 // compute and store shared secret
-                let mut node_data = self.data.lock()
+                let mut node_data = self
+                    .data
+                    .lock()
                     .map_err(|_| io::Error::new(ErrorKind::Other, "Mutex lock failed"))?;
                 node_data.shared_secret = compute_shared_secret(private_key, peer_public_key, salt)
-                    .map_err(|_| io::Error::new(ErrorKind::Other, "Failed computing shared secret"))?;
-
+                    .map_err(|_| {
+                        io::Error::new(ErrorKind::Other, "Failed computing shared secret")
+                    })?;
             }
         };
 
         Ok(conn)
-
     }
-
 }
 
-
 /// Computes the shared secret with an ephemeral private key and the given public key
-fn compute_shared_secret<B: AsRef<[u8]>>(my_private_key: EphemeralPrivateKey, peer_public_key: UnparsedPublicKey<B>, salt: &[u8]) -> Result<Vec<u8>, Unspecified> {
+fn compute_shared_secret<B: AsRef<[u8]>>(
+    my_private_key: EphemeralPrivateKey,
+    peer_public_key: UnparsedPublicKey<B>,
+    salt: &[u8],
+) -> Result<Vec<u8>, Unspecified> {
     agree_ephemeral(
         my_private_key,
         &UnparsedPublicKey::new(&X25519, peer_public_key.as_ref()),
@@ -150,20 +168,18 @@ fn compute_shared_secret<B: AsRef<[u8]>>(my_private_key: EphemeralPrivateKey, pe
             okm.fill(&mut session_key).expect("fill failed");
             // return as vec
             session_key.to_vec()
-        }
+        },
     )
 }
-
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use tokio::time::{Duration, sleep};
+    use tokio::time::{sleep, Duration};
 
     #[tokio::test]
     async fn test_node_handshake() {
-
         // two test nodes
         let initiator = SimpleNode::new("initiator");
         let responder = SimpleNode::new("responder");
@@ -190,7 +206,5 @@ mod tests {
         assert!(secret_initiator.is_some());
         assert!(secret_responder.is_some());
         assert_eq!(secret_initiator, secret_responder);
-    
     }
-
 }
