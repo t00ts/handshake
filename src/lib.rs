@@ -1,5 +1,7 @@
 // lib.rs
 
+mod secret;
+
 use pea2pea::{protocols::Handshake, Config, Connection, ConnectionSide, Node, Pea2Pea};
 use ring::{
     agreement::{agree_ephemeral, EphemeralPrivateKey, UnparsedPublicKey, X25519},
@@ -7,6 +9,7 @@ use ring::{
     hkdf::{Salt, HKDF_SHA256},
     rand::{SecureRandom, SystemRandom},
 };
+use secret::SharedSecret;
 use std::{
     collections::HashMap,
     io::{self, Error, ErrorKind},
@@ -22,15 +25,15 @@ const PUBLIC_KEY_LENGTH: usize = 32;
 const SALT_LENGTH: usize = 16;
 
 #[allow(dead_code)]
-#[derive(Clone, Default)]
+#[cfg_attr(test, derive(Clone))]
 struct PeerData {
-    shared_secret: Vec<u8>,
+    shared_secret: SharedSecret,
     nonce: u64,
 }
 
 impl PeerData {
     /// Create a new [PeerData]
-    fn new(shared_secret: Vec<u8>) -> Self {
+    fn new(shared_secret: SharedSecret) -> Self {
         Self {
             shared_secret,
             nonce: 0,
@@ -165,7 +168,7 @@ fn compute_shared_secret<B: AsRef<[u8]>>(
     my_private_key: EphemeralPrivateKey,
     peer_public_key: UnparsedPublicKey<B>,
     salt: &[u8],
-) -> Result<Vec<u8>, Unspecified> {
+) -> Result<SharedSecret, Unspecified> {
     agree_ephemeral(
         my_private_key,
         &UnparsedPublicKey::new(&X25519, peer_public_key.as_ref()),
@@ -181,7 +184,7 @@ fn compute_shared_secret<B: AsRef<[u8]>>(
             let mut session_key = [0u8; 32];
             okm.fill(&mut session_key).expect("fill failed");
             // return as vec
-            session_key.to_vec()
+            session_key.to_vec().into()
         },
     )
 }
@@ -217,7 +220,7 @@ mod tests {
         let responder_connections = responder.node().connection_infos();
         let initiator_addr = responder_connections.values().next().unwrap();
 
-        // check the agreed secrets
+        // check the mutually agreed secrets
         let pd_initiator = initiator.peer_data(responder_addr);
         let pd_responder = responder.peer_data(initiator_addr.addr());
 
@@ -259,10 +262,10 @@ mod tests {
                 0 | LAST_NODE => assert_eq!(1, nodes[i].node.connected_addrs().len()),
                 _ => assert_eq!(2, nodes[i].node.connected_addrs().len()),
             }
-            // make sure they all have a secret for the next node (linear)
+            // make sure they all have a shared secret with the next node (linear)
             let next_node_addr = nodes[i + 1].node.listening_addr().unwrap();
             let pd = nodes[i].peer_data(next_node_addr);
-            assert!(pd.is_some_and(|d| !d.shared_secret.is_empty()));
+            assert!(pd.is_some_and(|d| !d.shared_secret.as_bytes().is_empty()));
             // no other nodes should've handshaked
             for j in 0..NODE_COUNT {
                 if j != i + 1 {
