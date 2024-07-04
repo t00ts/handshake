@@ -190,10 +190,11 @@ fn compute_shared_secret<B: AsRef<[u8]>>(
 mod tests {
 
     use super::*;
+    use pea2pea::{connect_nodes, Topology};
     use tokio::time::{sleep, Duration};
 
     #[tokio::test]
-    async fn test_node_handshake() {
+    async fn basic_node_handshake() {
         // two test nodes
         let initiator = SimpleNode::new("initiator");
         let responder = SimpleNode::new("responder");
@@ -226,5 +227,79 @@ mod tests {
         let peer_initiator = pd_initiator.unwrap();
         let peer_responder = pd_responder.unwrap();
         assert_eq!(peer_initiator.shared_secret, peer_responder.shared_secret);
+    }
+
+    #[tokio::test]
+    async fn linear_nodes() {
+        const NODE_COUNT: usize = 10;
+        const LAST_NODE: usize = NODE_COUNT - 1;
+
+        // create some nodes
+        let mut nodes = Vec::with_capacity(NODE_COUNT);
+        for i in 0..NODE_COUNT {
+            let name = format!("Node {}", i);
+            nodes.push(SimpleNode::new(&name));
+        }
+
+        // enable handshake
+        for node in &nodes {
+            node.enable_handshake().await;
+            node.node().start_listening().await.unwrap();
+        }
+
+        // connect nodes linearly
+        connect_nodes(&nodes, Topology::Line).await.unwrap();
+
+        // give it a second
+        let _ = sleep(Duration::from_secs(1));
+
+        for i in 0..NODE_COUNT - 1 {
+            // all nodes except the first and last should have 2 connections
+            match i {
+                0 | LAST_NODE => assert_eq!(1, nodes[i].node.connected_addrs().len()),
+                _ => assert_eq!(2, nodes[i].node.connected_addrs().len()),
+            }
+            // make sure they all have a secret for the next node (linear)
+            let next_node_addr = nodes[i + 1].node.listening_addr().unwrap();
+            let pd = nodes[i].peer_data(next_node_addr);
+            assert!(pd.is_some_and(|d| !d.shared_secret.is_empty()));
+            // no other nodes should've handshaked
+            for j in 0..NODE_COUNT {
+                if j != i + 1 {
+                    let other_node_addr = nodes[j].node.listening_addr().unwrap();
+                    let pd = nodes[i].peer_data(other_node_addr);
+                    assert!(pd.is_none())
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn mesh_nodes() {
+        const NODE_COUNT: usize = 10;
+
+        // create some nodes
+        let mut nodes = Vec::with_capacity(NODE_COUNT);
+        for i in 0..NODE_COUNT {
+            let name = format!("Node {}", i);
+            nodes.push(SimpleNode::new(&name));
+        }
+
+        // enable handshake
+        for node in &nodes {
+            node.enable_handshake().await;
+            node.node().start_listening().await.unwrap();
+        }
+
+        // connect nodes in a mesh
+        connect_nodes(&nodes, Topology::Mesh).await.unwrap();
+
+        // give it a second
+        let _ = sleep(Duration::from_secs(2));
+
+        // all nodes should have 9 connections (all peers)
+        for i in 0..NODE_COUNT {
+            assert_eq!(NODE_COUNT - 1, nodes[i].node.connected_addrs().len());
+        }
     }
 }
