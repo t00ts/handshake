@@ -14,7 +14,7 @@ use std::{
     collections::HashMap,
     io::{self, Error, ErrorKind},
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{Arc, RwLock},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -45,7 +45,7 @@ impl PeerData {
 #[derive(Clone)]
 pub struct SimpleNode {
     node: Node,
-    peers: Arc<Mutex<HashMap<SocketAddr, PeerData>>>,
+    peers: Arc<RwLock<HashMap<SocketAddr, PeerData>>>,
 }
 
 impl Pea2Pea for SimpleNode {
@@ -63,7 +63,7 @@ impl SimpleNode {
         };
         Self {
             node: Node::new(cfg),
-            peers: Arc::new(Mutex::new(HashMap::new())),
+            peers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -71,7 +71,7 @@ impl SimpleNode {
     fn add_peer(&self, socket_addr: SocketAddr, data: PeerData) -> Result<(), Error> {
         let mut peers = self
             .peers
-            .lock()
+            .write()
             .map_err(|_| Error::new(ErrorKind::Other, "Mutex lock failed"))?;
         peers.insert(socket_addr, data);
         Ok(())
@@ -79,7 +79,7 @@ impl SimpleNode {
 
     #[cfg(test)]
     fn peer_data(&self, peer_addr: SocketAddr) -> Option<PeerData> {
-        let peers = self.peers.lock().ok()?;
+        let peers = self.peers.read().ok()?;
         peers.get(&peer_addr).cloned()
     }
 }
